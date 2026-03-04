@@ -1,0 +1,10 @@
+services:
+  unifi-hass-webhook:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: unifi-hass-webhook
+    restart: unless-stopped
+    env_file:
+      - .env
+    network_mode: host
