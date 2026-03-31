@@ -72,7 +72,15 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	allowed, err := s.isEventAllowed(event)
 	if !allowed {
-		s.logger.Printf("event not allowed: %v", err)
+		s.logger.Printf(
+			"event not allowed: reason=%v event=%s event_object_id=%s policy_id=%s actor_id=%s device_id=%s",
+			err,
+			event.Event,
+			event.EventObjectID,
+			event.Data.Object.PolicyID,
+			valueOrEmpty(event.Data.Actor, func(actor *struct{ ID string `json:"id"` }) string { return actor.ID }),
+			valueOrEmpty(event.Data.Device, func(device *struct{ ID string `json:"id"` }) string { return device.ID }),
+		)
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
