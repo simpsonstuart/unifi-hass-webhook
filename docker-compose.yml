@@ -1,10 +1,17 @@
 services:
   unifi-hass-webhook:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${IMAGE_NAME:-ghcr.io/majd/unifi-hass-webhook:latest}
     container_name: unifi-hass-webhook
     restart: unless-stopped
-    env_file:
-      - .env
+    environment:
+      LISTEN_ADDRESS: ${LISTEN_ADDRESS:-:8080}
+      UNIFI_WEBHOOK_SECRET: ${UNIFI_WEBHOOK_SECRET}
+      UNIFI_ALLOWED_POLICY_IDS: ${UNIFI_ALLOWED_POLICY_IDS}
+      UNIFI_ALLOWED_ACTOR_IDS: ${UNIFI_ALLOWED_ACTOR_IDS}
+      UNIFI_ALLOWED_DEVICE_IDS: ${UNIFI_ALLOWED_DEVICE_IDS}
+      UNIFI_ALLOWED_LOCATION_IDS: ${UNIFI_ALLOWED_LOCATION_IDS}
+      UNIFI_ALLOWED_AUTH_TYPES: ${UNIFI_ALLOWED_AUTH_TYPES}
+      HA_BASE_URL: ${HA_BASE_URL}
+      HA_TOKEN: ${HA_TOKEN}
+      HA_SCRIPT_ENTITY_ID: ${HA_SCRIPT_ENTITY_ID}
     network_mode: host

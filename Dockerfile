@@ -1,13 +1,17 @@
-FROM golang:1.23.0-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 WORKDIR /app/src
 
+ARG TARGETOS
+ARG TARGETARCH
+
 COPY src/go.mod ./
+COPY src/go.sum ./
 RUN go mod download
 
 COPY src/ ./
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags='-s -w' -o /out/unifi-hass-verifier .
 
 FROM alpine:3.20
