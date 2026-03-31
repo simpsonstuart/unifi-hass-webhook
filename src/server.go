@@ -91,6 +91,14 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.replay.Set(replayKey, struct{}{}, ttlcache.DefaultTTL)
+	s.logger.Printf(
+		"accepted event=%s event_object_id=%s policy_id=%s actor_id=%s device_id=%s",
+		event.Event,
+		event.EventObjectID,
+		event.Data.Object.PolicyID,
+		valueOrEmpty(event.Data.Actor, func(actor *struct{ ID string `json:"id"` }) string { return actor.ID }),
+		valueOrEmpty(event.Data.Device, func(device *struct{ ID string `json:"id"` }) string { return device.ID }),
+	)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "event": event.Event})

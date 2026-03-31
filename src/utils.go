@@ -100,3 +100,11 @@ func loadConfig() (*config, error) {
 
 	return &cfg, nil
 }
+
+func valueOrEmpty[T any](value *T, pick func(*T) string) string {
+	if value == nil {
+		return ""
+	}
+
+	return pick(value)
+}
