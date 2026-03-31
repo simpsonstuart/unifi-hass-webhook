@@ -27,8 +27,6 @@ type config struct {
 	UIAllowedPolicyIDs   []string `env:"UNIFI_ALLOWED_POLICY_IDS" envSeparator:","`
 	UIAllowedActorIDs    []string `env:"UNIFI_ALLOWED_ACTOR_IDS" envSeparator:","`
 	UIAllowedDeviceIDs   []string `env:"UNIFI_ALLOWED_DEVICE_IDS" envSeparator:","`
-	UIAllowedLocationIDs []string `env:"UNIFI_ALLOWED_LOCATION_IDS" envSeparator:","`
-	UIAllowedAuthTypes   []string `env:"UNIFI_ALLOWED_AUTH_TYPES" envSeparator:","`
 	HABaseURL            string   `env:"HA_BASE_URL,required"`
 	HAToken              string   `env:"HA_TOKEN,required"`
 	HAScriptEntityID     string   `env:"HA_SCRIPT_ENTITY_ID,required"`
@@ -53,9 +51,8 @@ type unifiEvent struct {
 			ID string `json:"id"`
 		} `json:"device"`
 		Object struct {
-			Result             string `json:"result"`
-			PolicyID           string `json:"policy_id"`
-			AuthenticationType string `json:"authentication_type"`
+			Result   string `json:"result"`
+			PolicyID string `json:"policy_id"`
 		} `json:"object"`
 	} `json:"data"`
 }

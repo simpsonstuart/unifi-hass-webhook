@@ -13,7 +13,7 @@ Small Go webhook service that verifies UniFi Access webhook signatures, filters 
 4. Filters to allowed events only:
    - `event == access.door.unlock`
    - `data.object.result == Access Granted`
-   - allowlist checks for policy, actor, device, location, auth type
+   - allowlist checks for policy, actor, and device
 5. Calls Home Assistant:
    - `POST /api/services/script/turn_on`
    - sends your script `entity_id` and UniFi event data in `variables`
@@ -29,8 +29,6 @@ Environment variables:
 | `UNIFI_ALLOWED_POLICY_IDS`   | Yes      | -       | Comma-separated allowed policy IDs                                      |
 | `UNIFI_ALLOWED_ACTOR_IDS`    | Yes      | -       | Comma-separated allowed actor IDs                                       |
 | `UNIFI_ALLOWED_DEVICE_IDS`   | Yes      | -       | Comma-separated allowed device IDs                                      |
-| `UNIFI_ALLOWED_LOCATION_IDS` | Yes      | -       | Comma-separated allowed location IDs                                    |
-| `UNIFI_ALLOWED_AUTH_TYPES`   | Yes      | -       | Comma-separated allowed auth types                                      |
 | `HA_BASE_URL`                | Yes      | -       | Home Assistant base URL (for example `http://homeassistant.local:8123`) |
 | `HA_TOKEN`                   | Yes      | -       | Long-lived Home Assistant token                                         |
 | `HA_SCRIPT_ENTITY_ID`        | Yes      | -       | Script entity to call (for example `script.unifi_access_granted`)       |
@@ -44,8 +42,6 @@ UNIFI_WEBHOOK_SECRET=replace_me
 UNIFI_ALLOWED_POLICY_IDS=<policy-id-from-step-3> # Policy IDs from your Access deployment (comma seperated)
 UNIFI_ALLOWED_ACTOR_IDS=<actor-id-1>,<actor-id-2> # User IDs from your Access deployment (comma seperated)
 UNIFI_ALLOWED_DEVICE_IDS=<device-id> # Access Hub IDs from your Access deployment (comma seperated)
-UNIFI_ALLOWED_LOCATION_IDS=<location-id> # location IDs from your Access deployment (comma seperated)
-UNIFI_ALLOWED_AUTH_TYPES=WALLET_NFC_APPLE # Allowed auth types. WALLET_NFC_APPLE is Touch Pass in Apple Wallet (comma seperated)
 
 HA_BASE_URL=https://home-assistant.example.com
 HA_TOKEN=replace_me
@@ -65,8 +61,6 @@ UNIFI_WEBHOOK_SECRET
 UNIFI_ALLOWED_POLICY_IDS
 UNIFI_ALLOWED_ACTOR_IDS
 UNIFI_ALLOWED_DEVICE_IDS
-UNIFI_ALLOWED_LOCATION_IDS
-UNIFI_ALLOWED_AUTH_TYPES
 HA_BASE_URL
 HA_TOKEN
 HA_SCRIPT_ENTITY_ID
@@ -139,8 +133,6 @@ UNIFI_WEBHOOK_SECRET=replace_me
 UNIFI_ALLOWED_POLICY_IDS=<policy-id>
 UNIFI_ALLOWED_ACTOR_IDS=<actor-id-1>,<actor-id-2>
 UNIFI_ALLOWED_DEVICE_IDS=<device-id>
-UNIFI_ALLOWED_LOCATION_IDS=<location-id>
-UNIFI_ALLOWED_AUTH_TYPES=WALLET_NFC_APPLE
 HA_BASE_URL=https://home-assistant.example.com
 HA_TOKEN=replace_me
 HA_SCRIPT_ENTITY_ID=script.retract_apartment_door_latch

@@ -117,14 +117,6 @@ func (s *server) isEventAllowed(event unifiEvent) (bool, error) {
 		return false, errors.New("device_id not allowed")
 	}
 
-	if !slices.Contains(s.cfg.UIAllowedLocationIDs, event.Data.Location.ID) {
-		return false, errors.New("location_id not allowed")
-	}
-
-	if !slices.Contains(s.cfg.UIAllowedAuthTypes, event.Data.Object.AuthenticationType) {
-		return false, errors.New("authentication_type not allowed")
-	}
-
 	return true, nil
 }
 
