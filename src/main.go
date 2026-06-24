@@ -13,12 +13,18 @@ import (
 
 const (
 	webhookEndpoint = "/unifi/webhook"
+	statusEndpoint  = "/lock/status"
 
 	eventType             = "access.door.unlock"
 	eventMaxClockSkew     = 30 * time.Second
 	eventReplayTTL        = 5 * time.Minute
 	eventReplayMaxEntries = 10000
 	eventMaxBodyBytes     = 1048576
+
+	haDeliveryQueueSize   = 100
+	haDeliveryMaxAttempts = 15
+	haDeliveryInitialWait = 2 * time.Second
+	haDeliveryMaxWait     = 1 * time.Minute
 )
 
 type config struct {
@@ -30,6 +36,7 @@ type config struct {
 	HABaseURL            string   `env:"HA_BASE_URL,required"`
 	HAToken              string   `env:"HA_TOKEN,required"`
 	HAScriptEntityID     string   `env:"HA_SCRIPT_ENTITY_ID,required"`
+	LockStatusSecret     string   `env:"LOCK_STATUS_SECRET"`
 }
 
 type signatureHeader struct {
@@ -72,15 +79,25 @@ func main() {
 	defer replay.Stop()
 
 	s := &server{
-		cfg:    *cfg,
-		client: newHAClient(),
-		replay: replay,
-		logger: logger,
+		cfg:              *cfg,
+		client:           newHAClient(),
+		replay:           replay,
+		logger:           logger,
+		allowedPolicyIDs: makeStringSet(cfg.UIAllowedPolicyIDs),
+		allowedActorIDs:  makeStringSet(cfg.UIAllowedActorIDs),
+		allowedDeviceIDs: makeStringSet(cfg.UIAllowedDeviceIDs),
+		lockStates:       make(map[string]lockState),
+		haScriptURL:      buildHAScriptURL(cfg.HABaseURL),
+		haEvents:         make(chan haDelivery, haDeliveryQueueSize),
 	}
+	go s.deliverHomeAssistantEvents()
 
 	r := chi.NewRouter()
 	r.Use(middleware.RealIP, middleware.RequestID, middleware.Logger, middleware.Recoverer, middleware.Timeout(15*time.Second))
 	r.Post(webhookEndpoint, s.handleWebhook)
+	if s.cfg.LockStatusSecret != "" {
+		r.Post(statusEndpoint, s.handleStatus)
+	}
 
 	httpServer := &http.Server{
 		Addr:              s.cfg.ListenAddress,

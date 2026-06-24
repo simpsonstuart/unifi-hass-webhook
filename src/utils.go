@@ -18,7 +18,30 @@ import (
 func newHAClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	return &http.Client{Timeout: 4 * time.Second, Transport: transport}
+	transport.MaxIdleConns = 10
+	transport.MaxIdleConnsPerHost = 4
+	transport.IdleConnTimeout = 90 * time.Second
+	return &http.Client{Timeout: 8 * time.Second, Transport: transport}
+}
+
+func buildHAScriptURL(baseURL string) string {
+	return strings.TrimRight(baseURL, "/") + "/api/services/script/turn_on"
+}
+
+func makeStringSet(values []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			result[value] = struct{}{}
+		}
+	}
+	return result
+}
+
+func stringSetContains(values map[string]struct{}, value string) bool {
+	_, ok := values[strings.TrimSpace(value)]
+	return ok
 }
 
 func parseSignatureHeader(header string) (*signatureHeader, error) {

@@ -12,4 +12,5 @@ services:
       HA_BASE_URL: ${HA_BASE_URL}
       HA_TOKEN: ${HA_TOKEN}
       HA_SCRIPT_ENTITY_ID: ${HA_SCRIPT_ENTITY_ID}
+      LOCK_STATUS_SECRET: ${LOCK_STATUS_SECRET:-}
     network_mode: host

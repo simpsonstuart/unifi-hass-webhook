@@ -9,18 +9,56 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jellydator/ttlcache/v3"
 )
 
 type server struct {
-	cfg    config
-	client *http.Client
-	replay *ttlcache.Cache[string, struct{}]
-	logger *log.Logger
+	cfg              config
+	client           *http.Client
+	replay           *ttlcache.Cache[string, struct{}]
+	logger           *log.Logger
+	allowedPolicyIDs map[string]struct{}
+	allowedActorIDs  map[string]struct{}
+	allowedDeviceIDs map[string]struct{}
+	stateMu          sync.Mutex
+	lockStates       map[string]lockState
+	haScriptURL      string
+	haEvents         chan haDelivery
+}
+
+type haDelivery struct {
+	event         unifiEvent
+	rawBody       []byte
+	sig           signatureHeader
+	receivedAt    time.Time
+	action        lockAction
+	previousState lockState
+	newState      lockState
+	stateSource   string
+}
+
+type lockAction string
+
+const (
+	lockActionUnlock lockAction = "unlock"
+	lockActionLock   lockAction = "lock"
+)
+
+type lockState string
+
+const (
+	lockStateUnknown  lockState = "unknown"
+	lockStateLocked   lockState = "locked"
+	lockStateUnlocked lockState = "unlocked"
+)
+
+type lockStatusUpdate struct {
+	DeviceID string `json:"device_id"`
+	State    string `json:"state"`
 }
 
 func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
@@ -92,24 +130,48 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.callHomeAssistant(r.Context(), event, body, *sig); err != nil {
-		s.logger.Printf("failed to call Home Assistant: %v", err)
-		w.WriteHeader(http.StatusBadGateway)
+	action, previousState, newState := s.nextLockAction(event.Data.Device.ID)
+	delivery := haDelivery{
+		event:         event,
+		rawBody:       body,
+		sig:           *sig,
+		receivedAt:    now,
+		action:        action,
+		previousState: previousState,
+		newState:      newState,
+		stateSource:   "optimistic",
+	}
+
+	select {
+	case s.haEvents <- delivery:
+	default:
+		s.revertLockStateIfCurrent(event.Data.Device.ID, newState, previousState)
+		s.logger.Printf("Home Assistant delivery queue full")
+		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
 
 	s.replay.Set(replayKey, struct{}{}, ttlcache.DefaultTTL)
 	s.logger.Printf(
-		"accepted event=%s event_object_id=%s policy_id=%s actor_id=%s device_id=%s",
+		"accepted event=%s event_object_id=%s policy_id=%s actor_id=%s device_id=%s action=%s previous_state=%s new_state=%s queued_for_home_assistant=true",
 		event.Event,
 		event.EventObjectID,
 		event.Data.Object.PolicyID,
 		valueOrEmpty(event.Data.Actor, func(actor *struct{ ID string `json:"id"` }) string { return actor.ID }),
 		valueOrEmpty(event.Data.Device, func(device *struct{ ID string `json:"id"` }) string { return device.ID }),
+		action,
+		previousState,
+		newState,
 	)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "event": event.Event})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":         "ok",
+		"event":          event.Event,
+		"action":         action,
+		"previous_state": previousState,
+		"new_state":      newState,
+	})
 }
 
 func (s *server) isEventAllowed(event unifiEvent) (bool, error) {
@@ -121,39 +183,191 @@ func (s *server) isEventAllowed(event unifiEvent) (bool, error) {
 		return false, errors.New("result check failed")
 	}
 
-	if !slices.Contains(s.cfg.UIAllowedPolicyIDs, event.Data.Object.PolicyID) {
+	if !stringSetContains(s.allowedPolicyIDs, event.Data.Object.PolicyID) {
 		return false, errors.New("policy_id not allowed")
 	}
 
-	if !slices.Contains(s.cfg.UIAllowedActorIDs, event.Data.Actor.ID) {
+	if event.Data.Actor == nil {
+		return false, errors.New("missing actor")
+	}
+
+	if !stringSetContains(s.allowedActorIDs, event.Data.Actor.ID) {
 		return false, errors.New("actor_id not allowed")
 	}
 
-	if !slices.Contains(s.cfg.UIAllowedDeviceIDs, event.Data.Device.ID) {
+	if event.Data.Device == nil {
+		return false, errors.New("missing device")
+	}
+
+	if !stringSetContains(s.allowedDeviceIDs, event.Data.Device.ID) {
 		return false, errors.New("device_id not allowed")
 	}
 
 	return true, nil
 }
 
-func (s *server) callHomeAssistant(ctx context.Context, event unifiEvent, rawBody []byte, sig signatureHeader) error {
-	reqBody, err := json.Marshal(map[string]any{
-		"entity_id": s.cfg.HAScriptEntityID,
-		"variables": map[string]any{
-			"unifi_event_name":      event.Event,
-			"unifi_event_object_id": event.EventObjectID,
-			"unifi_signature_time":  sig.Timestamp.UTC().Format(time.RFC3339),
-			"unifi_received_at":     time.Now().UTC().Format(time.RFC3339),
-			"unifi_event":           event,
-			"unifi_event_json":      string(rawBody),
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to marshal HA request: %w", err)
+func (s *server) nextLockAction(deviceID string) (lockAction, lockState, lockState) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+
+	previousState := s.lockStates[deviceID]
+	if previousState == "" {
+		previousState = lockStateUnknown
 	}
 
-	url := strings.TrimRight(s.cfg.HABaseURL, "/") + "/api/services/script/turn_on"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	action := lockActionUnlock
+	newState := lockStateUnlocked
+	if previousState == lockStateUnlocked {
+		action = lockActionLock
+		newState = lockStateLocked
+	}
+
+	s.lockStates[deviceID] = newState
+	return action, previousState, newState
+}
+
+func (s *server) setLockState(deviceID string, state lockState) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.lockStates[deviceID] = state
+}
+
+func (s *server) revertLockStateIfCurrent(deviceID string, currentState, previousState lockState) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.lockStates[deviceID] == currentState {
+		s.lockStates[deviceID] = previousState
+	}
+}
+
+func parseLockState(value string) (lockState, bool) {
+	switch lockState(strings.ToLower(strings.TrimSpace(value))) {
+	case lockStateLocked:
+		return lockStateLocked, true
+	case lockStateUnlocked:
+		return lockStateUnlocked, true
+	default:
+		return "", false
+	}
+}
+
+func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-Lock-Status-Secret") != s.cfg.LockStatusSecret {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	var update lockStatusUpdate
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&update); err != nil {
+		s.logger.Printf("invalid lock status payload: %v", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	deviceID := strings.TrimSpace(update.DeviceID)
+	if deviceID == "" {
+		s.logger.Printf("lock status update missing device_id")
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	state, ok := parseLockState(update.State)
+	if !ok {
+		s.logger.Printf("lock status update has invalid state: %s", update.State)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	s.setLockState(deviceID, state)
+	s.logger.Printf("updated lock state from status endpoint: device_id=%s state=%s", deviceID, state)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "device_id": deviceID, "state": state})
+}
+
+func (s *server) deliverHomeAssistantEvents() {
+	for delivery := range s.haEvents {
+		reqBody, err := s.buildHomeAssistantRequestBody(delivery)
+		if err != nil {
+			s.logger.Printf(
+				"failed to build Home Assistant request body: event=%s event_object_id=%s action=%s error=%v",
+				delivery.event.Event,
+				delivery.event.EventObjectID,
+				delivery.action,
+				err,
+			)
+			s.revertLockStateIfCurrent(delivery.event.Data.Device.ID, delivery.newState, delivery.previousState)
+			continue
+		}
+
+		wait := haDeliveryInitialWait
+
+		for attempt := 1; attempt <= haDeliveryMaxAttempts; attempt++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			err := s.callHomeAssistant(ctx, reqBody)
+			cancel()
+			if err == nil {
+				s.logger.Printf(
+					"delivered event to Home Assistant: event=%s event_object_id=%s action=%s attempt=%d",
+					delivery.event.Event,
+					delivery.event.EventObjectID,
+					delivery.action,
+					attempt,
+				)
+				break
+			}
+
+			if attempt == haDeliveryMaxAttempts {
+				s.logger.Printf(
+					"failed to deliver event to Home Assistant after %d attempts: event=%s event_object_id=%s action=%s error=%v",
+					attempt,
+					delivery.event.Event,
+					delivery.event.EventObjectID,
+					delivery.action,
+					err,
+				)
+				s.revertLockStateIfCurrent(delivery.event.Data.Device.ID, delivery.newState, delivery.previousState)
+				break
+			}
+
+			s.logger.Printf(
+				"failed to deliver event to Home Assistant, retrying: event=%s event_object_id=%s action=%s attempt=%d wait=%s error=%v",
+				delivery.event.Event,
+				delivery.event.EventObjectID,
+				delivery.action,
+				attempt,
+				wait,
+				err,
+			)
+			time.Sleep(wait)
+			wait *= 2
+			if wait > haDeliveryMaxWait {
+				wait = haDeliveryMaxWait
+			}
+		}
+	}
+}
+
+func (s *server) buildHomeAssistantRequestBody(delivery haDelivery) ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"entity_id": s.cfg.HAScriptEntityID,
+		"variables": map[string]any{
+			"unifi_event_name":      delivery.event.Event,
+			"unifi_event_object_id": delivery.event.EventObjectID,
+			"unifi_signature_time":  delivery.sig.Timestamp.UTC().Format(time.RFC3339),
+			"unifi_received_at":     delivery.receivedAt.UTC().Format(time.RFC3339),
+			"unifi_lock_action":     delivery.action,
+			"unifi_previous_state":  delivery.previousState,
+			"unifi_new_state":       delivery.newState,
+			"unifi_state_source":    delivery.stateSource,
+			"unifi_event":           delivery.event,
+			"unifi_event_json":      string(delivery.rawBody),
+		},
+	})
+}
+
+func (s *server) callHomeAssistant(ctx context.Context, reqBody []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.haScriptURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return fmt.Errorf("failed to build HA request: %w", err)
 	}
